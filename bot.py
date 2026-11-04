@@ -7,7 +7,7 @@ import threading
 from flask import Flask
 
 # --- CONFIGURAÇÃO DO TELEGRAM ---
-CHAT_ID = "-5514663870" # COLOQUE O ID DO SEU GRUPO AQUI
+CHAT_ID = "1470850500" # COLOQUE O ID DO SEU GRUPO AQUI
 URL_TELEGRAM_DIRETA = "https://api.telegram.org/bot9074266295:AAET9Ne2DczZHRqX-NrC-vtDxEWca6DyOSY/sendMessage"
 
 # --- CONFIGURAÇÃO DA DATA FIFA ATUAL ---
@@ -97,7 +97,7 @@ URLS_WIKIPEDIA = [
     "https://en.wikipedia.org/wiki/Azerbaijan_national_football_team",
     "https://en.wikipedia.org/wiki/Belarus_national_football_team",
     "https://en.wikipedia.org/wiki/Belgium_national_football_team",
-    "https://en.wikipedia.org/wiki/Bosnia_and_Herzegovina_national_football_team"
+    "https://en.wikipedia.org/wiki/Bosnia_and_Herzegovina_national_football_team",
     "https://en.wikipedia.org/wiki/Bulgaria_national_football_team",
     "https://en.wikipedia.org/wiki/Croatia_national_football_team",
     "https://en.wikipedia.org/wiki/Cyprus_national_football_team",
