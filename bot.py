@@ -32,6 +32,68 @@ URLS_TWITTER_RSS = [
     
 ]
 
+# --- 3. PÁGINAS DA WIKIPEDIA ---
+URLS_WIKIPEDIA = [
+    "https://en.wikipedia.org/wiki/Denmark_national_football_team",
+    "https://en.wikipedia.org/wiki/Brazil_national_football_team",
+    "https://en.wikipedia.org/wiki/Albania_national_football_team",
+    "https://en.wikipedia.org/wiki/Andorra_national_football_team",
+    "https://en.wikipedia.org/wiki/Austria_national_football_team",
+    "https://en.wikipedia.org/wiki/Azerbaijan_national_football_team",
+    "https://en.wikipedia.org/wiki/Belarus_national_football_team",
+    "https://en.wikipedia.org/wiki/Belgium_national_football_team",
+    "https://en.wikipedia.org/wiki/Bosnia_and_Herzegovina_national_football_team"
+    "https://en.wikipedia.org/wiki/Bulgaria_national_football_team",
+    "https://en.wikipedia.org/wiki/Croatia_national_football_team",
+    "https://en.wikipedia.org/wiki/Cyprus_national_football_team",
+    "https://en.wikipedia.org/wiki/Czech_Republic_national_football_team",
+    "https://en.wikipedia.org/wiki/Denmark_national_football_team",
+    "https://en.wikipedia.org/wiki/England_national_football_team",
+    "https://en.wikipedia.org/wiki/Estonia_national_football_team",
+    "https://en.wikipedia.org/wiki/Faroe_Islands_national_football_team",
+    "https://en.wikipedia.org/wiki/Finland_national_football_team",
+    "https://en.wikipedia.org/wiki/France_national_football_team",
+    "https://en.wikipedia.org/wiki/Georgia_national_football_team",
+    "https://en.wikipedia.org/wiki/Germany_national_football_team",
+    "https://en.wikipedia.org/wiki/Gibraltar_national_football_team",
+    "https://en.wikipedia.org/wiki/Greece_national_football_team",
+    "https://en.wikipedia.org/wiki/Hungary_national_football_team",
+    "https://en.wikipedia.org/wiki/Iceland_national_football_team",
+    "https://en.wikipedia.org/wiki/Republic_of_Ireland_national_football_team",
+    "https://en.wikipedia.org/wiki/Israel_national_football_team",
+    "https://en.wikipedia.org/wiki/Italy_national_football_team",
+    "https://en.wikipedia.org/wiki/Kazakhstan_national_football_team",
+    "https://en.wikipedia.org/wiki/Kosovo_national_football_team",
+    "https://en.wikipedia.org/wiki/Latvia_national_football_team",
+    "https://en.wikipedia.org/wiki/Liechtenstein_national_football_team",
+    "https://en.wikipedia.org/wiki/Lithuania_national_football_team",
+    "https://en.wikipedia.org/wiki/Luxembourg_national_football_team",
+    "https://en.wikipedia.org/wiki/Malta_national_football_team",
+    "https://en.wikipedia.org/wiki/Moldova_national_football_team",
+    "https://en.wikipedia.org/wiki/Montenegro_national_football_team",
+    "https://en.wikipedia.org/wiki/Netherlands_national_football_team",
+    "https://en.wikipedia.org/wiki/North_Macedonia_national_football_team",
+    "https://en.wikipedia.org/wiki/Northern_Ireland_national_football_team",
+    "https://en.wikipedia.org/wiki/Norway_national_football_team",
+    "https://en.wikipedia.org/wiki/Portugal_national_football_team",
+    "https://en.wikipedia.org/wiki/Romania_national_football_team",
+    "https://en.wikipedia.org/wiki/Russia_national_football_team",
+    "https://en.wikipedia.org/wiki/San_Marino_national_football_team",
+    "https://en.wikipedia.org/wiki/Scotland_national_football_team",
+    "https://en.wikipedia.org/wiki/Serbia_national_football_team",
+    "https://en.wikipedia.org/wiki/Slovenia_national_football_team",
+    "https://en.wikipedia.org/wiki/Spain_national_football_team",
+    "https://en.wikipedia.org/wiki/Sweden_national_football_team",
+    "https://en.wikipedia.org/wiki/Switzerland_national_football_team",
+    "https://en.wikipedia.org/wiki/Turkey_national_football_team",
+    "https://en.wikipedia.org/wiki/Ukraine_national_football_team",
+    "https://en.wikipedia.org/wiki/Wales_national_football_team"
+    # Lembre-se: use sempre os links em inglês (en.wikipedia.org)
+]
+
+# A FRASE EXATA QUE DIFERENCIA O ELENCO DO RESTO DA PÁGINA
+FRASE_GATILHO_WIKIPEDIA = "November 2026, respectively"
+
 ARQUIVO_CACHE = "ultimas_noticias_cache.txt"
 
 def enviar_telegram(mensagem):
@@ -169,6 +231,43 @@ def executar_varredura():
         except Exception as e:
             print(f" ❌ Erro ao acessar o feed do Twitter {url_rss}: {e}")
 
+    # --- PARTE 3: WIKIPEDIA ---
+    print(f"[Wikipedia] Checando {len(URLS_WIKIPEDIA)} páginas pela frase exata '{FRASE_GATILHO_WIKIPEDIA}'...")
+    for url in URLS_WIKIPEDIA:
+        try:
+            resposta_wiki = requests.get(url, headers=headers, timeout=15)
+            soup_wiki = BeautifulSoup(resposta_wiki.text, "html.parser")
+            
+            # Na Wiki, essa frase específica de elenco sempre fica em um parágrafo <p>
+            textos_pagina = soup_wiki.find_all("p")
+            
+            for item in textos_pagina:
+                texto_min = item.get_text().lower()
+                gatilho_min = FRASE_GATILHO_WIKIPEDIA.lower()
+                
+                # A mágica acontece aqui: busca a sua frase exata no parágrafo
+                if gatilho_min in texto_min:
+                    
+                    # Cria o "link falso" no cache (Removemos vírgulas e espaços para não bugar o bloco de notas)
+                    identificador_wiki = f"{url}__{FRASE_GATILHO_WIKIPEDIA.replace(' ', '_').replace(',', '')}"
+                    
+                    if identificador_wiki not in historico_enviados and identificador_wiki not in enviados_nesta_rodada:
+                        print(f" 🎉 Wikipedia atualizada encontrada: {url}")
+                        
+                        texto_alerta = (
+                            f"📚 *WIKIPEDIA ATUALIZADA!*\n\n"
+                            f"📢 A página da seleção confirmou o elenco oficial!\n"
+                            f"📌 Gatilho encontrado: _{FRASE_GATILHO_WIKIPEDIA}_\n\n"
+                            f"🔗 [Ver o Elenco]({url}#Current_squad)"
+                        )
+                        enviar_telegram(texto_alerta)
+                        
+                        salvar_no_cache(identificador_wiki)
+                        enviados_nesta_rodada.add(identificador_wiki)
+                        break # Achou a frase, para de ler esta página e vai pra próxima
+        except Exception as e:
+            print(f"Erro ao acessar Wikipedia {url}: {e}")
+            
     print("\nVarredura concluída. Próxima em 15 minutos.")
     print("==============================================")
 
