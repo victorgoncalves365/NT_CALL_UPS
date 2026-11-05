@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import threading
 from flask import Flask
+from datetime import datetime
 
 # --- CONFIGURAÇÃO DO TELEGRAM ---
 CHAT_ID = "1470850500" # COLOQUE O ID DO SEU GRUPO AQUI
@@ -12,13 +13,18 @@ URL_TELEGRAM_DIRETA = "https://api.telegram.org/bot9074266295:AAET9Ne2DczZHRqX-N
 
 # --- CONFIGURAÇÃO DA DATA FIFA ATUAL ---
 JANELA_FIFA_ATUAL = "November 2026"
-FRASE_GATILHO_WIKIPEDIA = "November 2026, respectively"
+
+# Adicione todas as variações de escrita que você perceber aqui
+FRASES_GATILHO_WIKIPEDIA = [
+    "november 2026, respectively",
+    "november 2026 respectively",
+    ", 2026 respectively"
+]
 
 # --- LISTA DE SELEÇÕES (Para evitar mensagens repetidas) ---
 # Esquerda: Nome Bonito pro Cache. Direita: Palavras que o bot vai procurar nos textos.
 # Você pode adicionar quantas seleções quiser seguindo esse padrão!
 SELECOES_MONITORADAS = {
-    "Brasil": ["brasil", "brazil", "seleção brasileira", "cbf"],
     
     # --- UEFA (Europa) ---
     "Albânia": ["albânia", "albania"],
@@ -75,7 +81,109 @@ SELECOES_MONITORADAS = {
     "Suécia": ["suécia", "suecia", "sweden"],
     "Suíça": ["suíça", "suica", "switzerland", "swiss"],
     "Turquia": ["turquia", "turkey", "türkiye"],
-    "Ucrânia": ["ucrânia", "ucrania", "ukraine"]
+    "Ucrânia": ["ucrânia", "ucrania", "ukraine"],
+    
+    # --- AFC (Ásia) ---
+    "Arábia Saudita": ["arábia saudita", "arabia saudita", "saudi arabia"],
+    "Bahrein": ["bahrein", "bahrain"],
+    "Catar": ["catar", "qatar"],
+    "China": ["china"],
+    "Coreia do Sul": ["coreia do sul", "south korea", "korea republic"],
+    "Emirados Árabes": ["emirados árabes", "emirados arabes", "uae", "united arab emirates"],
+    "Índia": ["índia", "india"],
+    "Indonésia": ["indonésia", "indonesia"],
+    "Irã": ["irã", "ira", "iran"],
+    "Iraque": ["iraque", "iraq"],
+    "Japão": ["japão", "japao", "japan"],
+    "Jordânia": ["jordânia", "jordania", "jordan"],
+    "Líbano": ["líbano", "libano", "lebanon"],
+    "Malásia": ["malásia", "malasia", "malaysia"],
+    "Omã": ["omã", "oma", "oman"],
+    "Palestina": ["palestina", "palestine"],
+    "Quirguistão": ["quirguistão", "quirguistao", "kyrgyzstan"],
+    "Tailândia": ["tailândia", "tailandia", "thailand"],
+    "Tajiquistão": ["tajiquistão", "tajiquistao", "tajikistan"],
+    "Uzbequistão": ["uzbequistão", "uzbequistao", "uzbekistan"],
+
+    # --- CAF (África) ---
+    "África do Sul": ["áfrica do sul", "africa do sul", "south africa", "bafana bafana"],
+    "Angola": ["angola"],
+    "Argélia": ["argélia", "argelia", "algeria"],
+    "Benim": ["benim", "benin"],
+    "Botsuana": ["botsuana", "botswana"],
+    "Burkina Faso": ["burkina faso"],
+    "Burundi": ["burundi"],
+    "Cabo Verde": ["cabo verde", "cape verde"],
+    "Camarões": ["camarões", "camaroes", "cameroon"],
+    "Comores": ["comores", "comoros"],
+    "Congo": ["república do congo", "republica do congo", "republic of the congo", "congo"],
+    "Costa do Marfim": ["costa do marfim", "ivory coast", "cote d'ivoire", "cote d ivoire"],
+    "Egito": ["egito", "egypt"],
+    "Etiópia": ["etiópia", "etiopia", "ethiopia"],
+    "Gabão": ["gabão", "gabao", "gabon"],
+    "Gâmbia": ["gâmbia", "gambia"],
+    "Gana": ["gana", "ghana"],
+    "Guiné": ["guiné", "guine", "guinea"],
+    "Guiné Equatorial": ["guiné equatorial", "guine equatorial", "equatorial guinea"],
+    "Guiné-Bissau": ["guiné-bissau", "guine-bissau", "guinea-bissau"],
+    "Lesoto": ["lesoto", "lesotho"],
+    "Libéria": ["libéria", "liberia"],
+    "Líbia": ["líbia", "libia", "libya"],
+    "Madagascar": ["madagascar"],
+    "Malaui": ["malaui", "malawi"],
+    "Mali": ["mali"],
+    "Marrocos": ["marrocos", "morocco"],
+    "Mauritânia": ["mauritânia", "mauritania"],
+    "Moçambique": ["moçambique", "mocambique", "mozambique"],
+    "Namíbia": ["namíbia", "namibia"],
+    "Níger": ["níger", "niger"],
+    "Nigéria": ["nigéria", "nigeria", "super eagles"],
+    "RD Congo": ["rd congo", "dr congo", "congo dr", "república democrática do congo", "democratic republic of the congo"],
+    "República Centro-Africana": ["república centro-africana", "republica centro-africana", "central african republic"],
+    "Ruanda": ["ruanda", "rwanda"],
+    "São Tomé e Príncipe": ["são tomé", "sao tome", "sao tome and principe"],
+    "Senegal": ["senegal"],
+    "Serra Leoa": ["serra leoa", "sierra leone"],
+    "Sudão do Sul": ["sudão do sul", "sudao do sul", "south sudan"],
+    "Tanzânia": ["tanzânia", "tanzania"],
+    "Togo": ["togo"],
+    "Tunísia": ["tunísia", "tunisia"],
+    "Uganda": ["uganda"],
+    "Zâmbia": ["zâmbia", "zambia"],
+
+    # --- CONMEBOL (América do Sul) ---
+    "Argentina": ["argentina", "albiceleste"],
+    "Brasil": ["brasil", "brazil", "seleção brasileira", "cbf"],
+    "Bolívia": ["bolívia", "bolivia"],
+    "Chile": ["chile"],
+    "Colômbia": ["colômbia", "colombia", "los cafeteros"],
+    "Equador": ["equador", "ecuador", "la tri"],
+    "Paraguai": ["paraguai", "paraguay", "albirroja"],
+    "Peru": ["peru", "bicolor"],
+    "Uruguai": ["uruguai", "uruguay", "celeste"],
+    "Venezuela": ["venezuela", "vinotinto"],
+
+    # --- CONCACAF (América do Norte e Central) ---
+    "Canadá": ["canadá", "canada"],
+    "Costa Rica": ["costa rica", "los ticos"],
+    "Cuba": ["cuba"],
+    "Curaçao": ["curaçao", "curacao"],
+    "El Salvador": ["el salvador"],
+    "Estados Unidos": ["estados unidos", "usa", "united states", "usmnt", "team usa"],
+    "Guatemala": ["guatemala"],
+    "Haiti": ["haiti"],
+    "Honduras": ["honduras"],
+    "Jamaica": ["jamaica", "reggae boyz"],
+    "México": ["méxico", "mexico", "el tri"],
+    "Nicarágua": ["nicarágua", "nicaragua"],
+    "Panamá": ["panamá", "panama"],
+    "Porto Rico": ["porto rico", "puerto rico"],
+    "República Dominicana": ["república dominicana", "republica dominicana", "dominican republic"],
+    "Trinidad e Tobago": ["trinidad e tobago", "trinidad and tobago"],
+
+     # --- OFC (Oceania) ---
+    "Australia": ["australia", "austrália"],
+    "Nova Zelândia": ["nova zelandia", "nova zelândia", "new zealand", "new zeland"], 
 }
 
 # --- FONTES DE DADOS ---
@@ -91,6 +199,7 @@ URLS_TWITTER_RSS = [
 ]
 
 URLS_WIKIPEDIA = [
+     # --- UEFA (Europa) ---
     "https://en.wikipedia.org/wiki/Albania_national_football_team",
     "https://en.wikipedia.org/wiki/Andorra_national_football_team",
     "https://en.wikipedia.org/wiki/Austria_national_football_team",
@@ -143,7 +252,108 @@ URLS_WIKIPEDIA = [
     "https://en.wikipedia.org/wiki/Turkey_national_football_team",
     "https://en.wikipedia.org/wiki/Ukraine_national_football_team",
     "https://en.wikipedia.org/wiki/Wales_national_football_team",
+    
+    # --- AFC (Ásia) ---
+    "https://en.wikipedia.org/wiki/Bahrain_national_football_team",
+    "https://en.wikipedia.org/wiki/China_national_football_team",
+    "https://en.wikipedia.org/wiki/India_national_football_team",
+    "https://en.wikipedia.org/wiki/Indonesia_national_football_team",
+    "https://en.wikipedia.org/wiki/Iran_national_football_team",
+    "https://en.wikipedia.org/wiki/Iraq_national_football_team",
+    "https://en.wikipedia.org/wiki/Japan_national_football_team",
+    "https://en.wikipedia.org/wiki/Jordan_national_football_team",
+    "https://en.wikipedia.org/wiki/Kyrgyzstan_national_football_team",
+    "https://en.wikipedia.org/wiki/Lebanon_national_football_team",
+    "https://en.wikipedia.org/wiki/Malaysia_national_football_team",
+    "https://en.wikipedia.org/wiki/Oman_national_football_team",
+    "https://en.wikipedia.org/wiki/Palestine_national_football_team",
+    "https://en.wikipedia.org/wiki/Qatar_national_football_team",
+    "https://en.wikipedia.org/wiki/Saudi_Arabia_national_football_team",
+    "https://en.wikipedia.org/wiki/South_Korea_national_football_team",
+    "https://en.wikipedia.org/wiki/Tajikistan_national_football_team",
+    "https://en.wikipedia.org/wiki/Thailand_national_football_team",
+    "https://en.wikipedia.org/wiki/United_Arab_Emirates_national_football_team",
+    "https://en.wikipedia.org/wiki/Uzbekistan_national_football_team",
+
+    # --- CAF (África) ---
+    "https://en.wikipedia.org/wiki/Algeria_national_football_team",
+    "https://en.wikipedia.org/wiki/Angola_national_football_team",
+    "https://en.wikipedia.org/wiki/Benin_national_football_team",
+    "https://en.wikipedia.org/wiki/Botswana_national_football_team",
+    "https://en.wikipedia.org/wiki/Burkina_Faso_national_football_team",
+    "https://en.wikipedia.org/wiki/Burundi_national_football_team",
+    "https://en.wikipedia.org/wiki/Cameroon_national_football_team",
+    "https://en.wikipedia.org/wiki/Cape_Verde_national_football_team",
+    "https://en.wikipedia.org/wiki/Central_African_Republic_national_football_team",
+    "https://en.wikipedia.org/wiki/Comoros_national_football_team",
+    "https://en.wikipedia.org/wiki/DR_Congo_national_football_team",
+    "https://en.wikipedia.org/wiki/Egypt_national_football_team",
+    "https://en.wikipedia.org/wiki/Equatorial_Guinea_national_football_team",
+    "https://en.wikipedia.org/wiki/Ethiopia_national_football_team",
+    "https://en.wikipedia.org/wiki/Gabon_national_football_team",
+    "https://en.wikipedia.org/wiki/Gambia_national_football_team",
+    "https://en.wikipedia.org/wiki/Ghana_national_football_team",
+    "https://en.wikipedia.org/wiki/Guinea_national_football_team",
+    "https://en.wikipedia.org/wiki/Guinea-Bissau_national_football_team",
+    "https://en.wikipedia.org/wiki/Ivory_Coast_national_football_team",
+    "https://en.wikipedia.org/wiki/Lesotho_national_football_team",
+    "https://en.wikipedia.org/wiki/Liberia_national_football_team",
+    "https://en.wikipedia.org/wiki/Libya_national_football_team",
+    "https://en.wikipedia.org/wiki/Madagascar_national_football_team",
+    "https://en.wikipedia.org/wiki/Malawi_national_football_team",
+    "https://en.wikipedia.org/wiki/Mali_national_football_team",
+    "https://en.wikipedia.org/wiki/Mauritania_national_football_team",
+    "https://en.wikipedia.org/wiki/Morocco_national_football_team",
+    "https://en.wikipedia.org/wiki/Mozambique_national_football_team",
+    "https://en.wikipedia.org/wiki/Namibia_national_football_team",
+    "https://en.wikipedia.org/wiki/Niger_national_football_team",
+    "https://en.wikipedia.org/wiki/Nigeria_national_football_team",
+    "https://en.wikipedia.org/wiki/Republic_of_the_Congo_national_football_team",
+    "https://en.wikipedia.org/wiki/Rwanda_national_football_team",
+    "https://en.wikipedia.org/wiki/Sao_Tome_and_Principe_national_football_team",
+    "https://en.wikipedia.org/wiki/Senegal_national_football_team",
+    "https://en.wikipedia.org/wiki/Sierra_Leone_national_football_team",
+    "https://en.wikipedia.org/wiki/South_Africa_national_football_team",
+    "https://en.wikipedia.org/wiki/South_Sudan_national_football_team",
+    "https://en.wikipedia.org/wiki/Tanzania_national_football_team",
+    "https://en.wikipedia.org/wiki/Togo_national_football_team",
+    "https://en.wikipedia.org/wiki/Tunisia_national_football_team",
+    "https://en.wikipedia.org/wiki/Uganda_national_football_team",
+    "https://en.wikipedia.org/wiki/Zambia_national_football_team",
+
+    # --- OFC (Oceania) ---
+    "https://en.wikipedia.org/wiki/Australia_men%27s_national_soccer_team",
+    "https://en.wikipedia.org/wiki/New_Zealand_men's_national_football_team",
+
+    # --- CONMEBOL (América do Sul) ---
+    "https://en.wikipedia.org/wiki/Argentina_national_football_team",
     "https://en.wikipedia.org/wiki/Brazil_national_football_team",
+    "https://en.wikipedia.org/wiki/Bolivia_national_football_team",
+    "https://en.wikipedia.org/wiki/Chile_national_football_team",
+    "https://en.wikipedia.org/wiki/Colombia_national_football_team",
+    "https://en.wikipedia.org/wiki/Ecuador_national_football_team",
+    "https://en.wikipedia.org/wiki/Paraguay_national_football_team",
+    "https://en.wikipedia.org/wiki/Peru_national_football_team",
+    "https://en.wikipedia.org/wiki/Uruguay_national_football_team",
+    "https://en.wikipedia.org/wiki/Venezuela_national_football_team",
+
+    # --- CONCACAF (América do Norte e Central) ---
+    "https://en.wikipedia.org/wiki/Canada_national_football_team",
+    "https://en.wikipedia.org/wiki/Costa_Rica_national_football_team",
+    "https://en.wikipedia.org/wiki/Cuba_national_football_team",
+    "https://en.wikipedia.org/wiki/Curacao_national_football_team",
+    "https://en.wikipedia.org/wiki/Dominican_Republic_national_football_team",
+    "https://en.wikipedia.org/wiki/El_Salvador_national_football_team",
+    "https://en.wikipedia.org/wiki/Guatemala_national_football_team",
+    "https://en.wikipedia.org/wiki/Haiti_national_football_team",
+    "https://en.wikipedia.org/wiki/Honduras_national_football_team",
+    "https://en.wikipedia.org/wiki/Jamaica_national_football_team",
+    "https://en.wikipedia.org/wiki/Mexico_national_football_team",
+    "https://en.wikipedia.org/wiki/Nicaragua_national_football_team",
+    "https://en.wikipedia.org/wiki/Panama_national_football_team",
+    "https://en.wikipedia.org/wiki/Puerto_Rico_national_football_team",
+    "https://en.wikipedia.org/wiki/Trinidad_and_Tobago_national_football_team",
+    "https://en.wikipedia.org/wiki/United_States_men%27s_national_soccer_team",
 ]
 
 ARQUIVO_CACHE = "ultimas_noticias_cache.txt"
@@ -183,14 +393,22 @@ def noticia_e_relevante(titulo):
 
 def classificar_noticia(texto):
     texto_min = texto.lower()
-    selecao_encontrada = None
+    selecoes_encontradas = []
     
-    # 1. Tenta descobrir de qual seleção estão falando
+    # 1. Encontra TODAS as seleções mencionadas e anota a posição exata delas na frase
     for nome_oficial, apelidos in SELECOES_MONITORADAS.items():
-        if any(apelido in texto_min for apelido in apelidos):
-            selecao_encontrada = nome_oficial
-            break
-            
+        for apelido in apelidos:
+            posicao = texto_min.find(apelido)
+            if posicao != -1:
+                selecoes_encontradas.append((posicao, nome_oficial))
+                break # Já achou o país, pula para verificar o próximo do dicionário
+                
+    # Se achou algum país, pega EXATAMENTE o que foi falado primeiro (menor posição no texto)
+    selecao_encontrada = None
+    if selecoes_encontradas:
+        selecoes_encontradas.sort(key=lambda x: x[0]) # Ordena da primeira palavra até a última
+        selecao_encontrada = selecoes_encontradas[0][1] # Pega o vencedor
+        
     # 2. Descobre se é sobre corte/substituição
     termos_corte = ["corte", "cortado", "desconvocado", "substitui", "substituto", "replacement", "replaced", "withdraw", "change for", "out:"]
     eh_corte = any(termo in texto_min for termo in termos_corte)
@@ -199,8 +417,9 @@ def classificar_noticia(texto):
 
 # --- MOTOR DE BUSCA ---
 def executar_varredura():
+    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     print("\n==============================================")
-    print("Iniciando varredura com Desduplicação de Entidades...")
+    print(f"[{agora}] Iniciando varredura com Desduplicação de Entidades...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
     historico_enviados = ler_cache()
@@ -267,13 +486,21 @@ def executar_varredura():
             for item in soup_wiki.find_all("p"):
                 texto_min = item.get_text().lower()
                 
-                if FRASE_GATILHO_WIKIPEDIA.lower() in texto_min:
+                # Procura se ALGUMA das frases da sua lista está no parágrafo
+                gatilho_encontrado = False
+                for frase in FRASES_GATILHO_WIKIPEDIA:
+                    if frase.lower() in texto_min:
+                        gatilho_encontrado = True
+                        break # Achou uma das frases! Pode parar de procurar
+                
+                if gatilho_encontrado:
                     selecao, _ = classificar_noticia(url) # Busca o nome do país direto na URL
                     
                     if selecao:
                         id_unico = f"CONVOCACAO_PRINCIPAL_{selecao}_{JANELA_FIFA_ATUAL.replace(' ', '_')}"
                     else:
-                        id_unico = f"{url}__{FRASE_GATILHO_WIKIPEDIA.replace(' ', '_').replace(',', '')}"
+                        # Agora usamos a JANELA_FIFA como trava para evitar repetição se alguém mudar a vírgula no site
+                        id_unico = f"{url}__{JANELA_FIFA_ATUAL.replace(' ', '_')}"
                     
                     if id_unico not in historico_enviados and id_unico not in enviados_nesta_rodada:
                         print(f" 🎉 Wikipedia atualizada: {url}")
@@ -282,8 +509,6 @@ def executar_varredura():
                         enviados_nesta_rodada.add(id_unico)
                         break
         except Exception: pass
-
-    print("Varredura concluída. Aguardando próximo ciclo...")
 
 # --- O TRUQUE DO SITE FALSO PARA A NUVEM (Render) ---
 app = Flask(__name__)
