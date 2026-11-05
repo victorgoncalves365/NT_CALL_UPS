@@ -8,7 +8,7 @@ from flask import Flask
 from datetime import datetime
 
 # --- CONFIGURAÇÃO DO TELEGRAM ---
-CHAT_ID = "1470850500" # COLOQUE O ID DO SEU GRUPO AQUI
+CHAT_ID = "-5514663870" # COLOQUE O ID DO SEU GRUPO AQUI
 URL_TELEGRAM_DIRETA = "https://api.telegram.org/bot9074266295:AAET9Ne2DczZHRqX-NrC-vtDxEWca6DyOSY/sendMessage"
 
 # --- CONFIGURAÇÃO DA DATA FIFA ATUAL ---
@@ -189,7 +189,7 @@ SELECOES_MONITORADAS = {
 # --- FONTES DE DADOS ---
 URLS_PORTAIS = [
     "https://globo.com", "https://reuters.com", "https://skysports.com",
-    "https://espn.com", "https://transfermarkt.com", "https://flashscore.com", "https://goal.com"
+    "https://espn.com", "https://transfermarkt.com", "https://www.flashscore.com/news/", 
 ]
 
 URLS_TWITTER_RSS = [
