@@ -1,29 +1,125 @@
-import time
-import requests
-import feedparser
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+import html
+import json
+import os
+import re
+import sys
 import threading
-from flask import Flask
+import time
+import unicodedata
 from datetime import datetime
+from urllib.parse import unquote, urljoin
 
-# --- CONFIGURAÇÃO DO TELEGRAM ---
-CHAT_ID = "-5514663870" # COLOQUE O ID DO SEU GRUPO AQUI
-URL_TELEGRAM_DIRETA = "https://api.telegram.org/bot9074266295:AAET9Ne2DczZHRqX-NrC-vtDxEWca6DyOSY/sendMessage"
+import feedparser
+import requests
+from bs4 import BeautifulSoup
+from flask import Flask
 
-# --- CONFIGURAÇÃO DA DATA FIFA ATUAL ---
+# COMO LER ESTE ARQUIVO
+# 1. As regulagens do dia a dia ficam aqui em cima: janela da FIFA, pausa e palavras.
+# 2. No meio está a sua lista de seleções e os sites.
+# 3. Embaixo está o motor. No dia a dia você não precisa mexer nele.
+# O token do Telegram fica nas variáveis do Render, não neste arquivo.
+
+# Mês em inglês, igual ao texto da Wikipedia. Exemplo da próxima janela: "March 2027".
 JANELA_FIFA_ATUAL = "November 2026"
 
-# Adicione todas as variações de escrita que você perceber aqui
+# 900 segundos = 15 minutos. A pausa começa depois que a varredura termina.
+INTERVALO_SEGUNDOS = 900
+
+# True também bloqueia sub-17, sub-20, sub-21 e sub-23.
+# Deixei False porque uma matéria da seleção principal às vezes cita a base.
+BLOQUEAR_SELECOES_DE_BASE = False
+
+# Frases extras da Wikipedia. A janela de cima já entra na busca.
 FRASES_GATILHO_WIKIPEDIA = [
     "november 2026, respectively",
     "november 2026 respectively",
-    ", 2026 respectively"
+    ", 2026 respectively",
 ]
 
-# --- LISTA DE SELEÇÕES (Para evitar mensagens repetidas) ---
-# Esquerda: Nome Bonito pro Cache. Direita: Palavras que o bot vai procurar nos textos.
-# Você pode adicionar quantas seleções quiser seguindo esse padrão!
+# Palavras que fazem o bot prestar atenção.
+TERMOS_CONVOCACAO = [
+    "convocados", "convocado", "convocadas", "convocada",
+    "convocação", "convocações", "convoca", "convocou", "convocaram",
+    "convocatoria", "convocatorias", "convoque", "convocation",
+    "squad", "roster", "call-up", "call-ups", "callup", "called up",
+    "corte", "cortado", "cortados", "cortou", "cortaram",
+    "desconvocado", "desconvocados", "desconvocou",
+    "substitui", "substituiu", "substituição", "substituído", "substituídos",
+    "substituto", "substitutos",
+    "replacement", "replaced", "replaces", "withdrawn", "withdraws", "withdrew", "withdraw",
+    "relacionados", "relacionado", "elenco",
+    "pré-lista", "pré-convocação", "lista final", "lista definitiva", "lista preliminar",
+    "chamado", "chamados", "desfalque", "desfalques", "desfalca",
+]
+
+# Se o título tiver uma destas palavras, ele fica de fora.
+TERMOS_FEMININO = [
+    "feminino", "feminina", "feminine", "feminin",
+    "femenina", "femenino", "femminile", "frauen", "mulheres",
+    "women", "womens", "woman", "womans", "female",
+    "uswnt", "lionesses", "lioness", "matildas", "nwsl", "shebelieves", "bleues",
+]
+
+TERMOS_OUTROS_ESPORTES = [
+    "basquete", "basketball", "nba", "nbb", "wnba",
+    "vôlei", "volei", "volleyball",
+    "tênis", "tenis", "tennis",
+    "fórmula 1", "formula 1", "automobilismo",
+    "natação", "natacao", "atletismo",
+    "handebol", "handball", "rugby", "cricket", "ipl",
+    "baseball", "beisebol", "mlb",
+    "hóquei", "hoquei", "hockey", "nhl",
+    "golfe", "golf", "ciclismo",
+    "ufc", "mma", "boxe", "boxing",
+    "nfl", "touchdown", "quarterback", "super bowl", "college football",
+    "futsal", "futebol de areia", "beach soccer",
+    "esports", "e-sports", "valorant", "counter-strike", "league of legends",
+]
+
+TERMOS_RUMOR = [
+    "entrevista", "entrevistas", "opinião", "rumor", "rumores",
+    "especulação", "especulações", "provável", "possível", "expectativa",
+    "interview", "rumour", "rumors", "opinion", "predicted", "prediction", "possible",
+]
+
+TERMOS_BASE = [
+    "sub-17", "sub-20", "sub-21", "sub-23",
+    "under-17", "under-20", "under-21", "under-23",
+    "u-17", "u-20", "u-21", "u-23",
+    "u17", "u20", "u21", "u23",
+]
+
+# Estas palavras não travam a seleção inteira: cada matéria de corte pode ser avisada.
+TERMOS_CORTE = [
+    "corte", "cortado", "cortados", "cortou", "cortaram",
+    "desconvocado", "desconvocados", "desconvocou",
+    "substitui", "substituiu", "substituição", "substituído", "substituídos",
+    "substituto", "substitutos",
+    "replacement", "replaced", "replaces", "withdrawn", "withdraws", "withdrew", "withdraw",
+    "desfalque", "desfalques", "desfalca", "ruled out", "out of the squad",
+]
+
+SINAIS_ELENCO_WIKI = [
+    "called up", "respectively", "preliminary",
+    "named in", "named to", "convoked", "squad for", "squad list",
+]
+
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
+CHAVE_CACHE = "memoria_convocacoes"
+ARQUIVO_CACHE = "ultimas_noticias_cache.json"
+ARQUIVO_CACHE_ANTIGO = "ultimas_noticias_cache.txt"
+
+HEADERS_WEB = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+HEADERS_WIKI = {
+    "User-Agent": "BotConvocacoesSelecoes/1.0 (avisos de elenco no Telegram; uso pessoal)"
+}
+
 SELECOES_MONITORADAS = {
     
     # --- UEFA (Europa) ---
@@ -92,7 +188,7 @@ SELECOES_MONITORADAS = {
     "Emirados Árabes": ["emirados árabes", "emirados arabes", "uae", "united arab emirates"],
     "Índia": ["índia", "india"],
     "Indonésia": ["indonésia", "indonesia"],
-    "Irã": ["irã", "ira", "iran"],
+    "Irã": ["irã", "iran"],
     "Iraque": ["iraque", "iraq"],
     "Japão": ["japão", "japao", "japan"],
     "Jordânia": ["jordânia", "jordania", "jordan"],
@@ -201,6 +297,7 @@ URLS_TWITTER_RSS = [
 URLS_WIKIPEDIA = [
      # --- UEFA (Europa) ---
     "https://en.wikipedia.org/wiki/Albania_national_football_team",
+    "https://en.wikipedia.org/wiki/Armenia_national_football_team",
     "https://en.wikipedia.org/wiki/Andorra_national_football_team",
     "https://en.wikipedia.org/wiki/Austria_national_football_team",
     "https://en.wikipedia.org/wiki/Azerbaijan_national_football_team",
@@ -239,12 +336,14 @@ URLS_WIKIPEDIA = [
     "https://en.wikipedia.org/wiki/North_Macedonia_national_football_team",
     "https://en.wikipedia.org/wiki/Northern_Ireland_national_football_team",
     "https://en.wikipedia.org/wiki/Norway_national_football_team",
+    "https://en.wikipedia.org/wiki/Poland_national_football_team",
     "https://en.wikipedia.org/wiki/Portugal_national_football_team",
     "https://en.wikipedia.org/wiki/Romania_national_football_team",
     "https://en.wikipedia.org/wiki/Russia_national_football_team",
     "https://en.wikipedia.org/wiki/San_Marino_national_football_team",
     "https://en.wikipedia.org/wiki/Scotland_national_football_team",
     "https://en.wikipedia.org/wiki/Serbia_national_football_team",
+    "https://en.wikipedia.org/wiki/Slovakia_national_football_team",
     "https://en.wikipedia.org/wiki/Slovenia_national_football_team",
     "https://en.wikipedia.org/wiki/Spain_national_football_team",
     "https://en.wikipedia.org/wiki/Sweden_national_football_team",
@@ -323,7 +422,7 @@ URLS_WIKIPEDIA = [
 
     # --- OFC (Oceania) ---
     "https://en.wikipedia.org/wiki/Australia_men%27s_national_soccer_team",
-    "https://en.wikipedia.org/wiki/New_Zealand_men's_national_football_team",
+    "https://en.wikipedia.org/wiki/New_Zealand_men%27s_national_football_team",
 
     # --- CONMEBOL (América do Sul) ---
     "https://en.wikipedia.org/wiki/Argentina_national_football_team",
@@ -356,171 +455,468 @@ URLS_WIKIPEDIA = [
     "https://en.wikipedia.org/wiki/United_States_men%27s_national_soccer_team",
 ]
 
-ARQUIVO_CACHE = "ultimas_noticias_cache.txt"
-
-# --- FUNÇÕES BÁSICAS ---
-def enviar_telegram(mensagem):
-    payload = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "Markdown", "disable_web_page_preview": False}
+def log(texto):
     try:
-        requests.post(URL_TELEGRAM_DIRETA, json=payload, timeout=10)
-    except Exception as e:
-        print(f"Erro ao enviar para o Telegram: {e}")
+        print(texto, flush=True)
+    except UnicodeEncodeError:
+        print(str(texto).encode("ascii", "backslashreplace").decode("ascii"), flush=True)
 
-def ler_cache():
+
+def preparar_console():
     try:
-        with open(ARQUIVO_CACHE, "r", encoding="utf-8") as f:
-            return set(linha.strip() for linha in f if linha.strip())
-    except FileNotFoundError:
-        return set()
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-def salvar_no_cache(identificador):
-    with open(ARQUIVO_CACHE, "a", encoding="utf-8") as f:
-        f.write(identificador + "\n")
 
-# --- FILTROS INTELIGENTES ---
-def noticia_e_relevante(titulo):
-    titulo_min = titulo.lower()
-    termos_principais = ["convocados", "convocação", "lista", "convoca", "convocado", "squad", "roster", "call-up", "callup", "corte", "cortado", "desconvocado", "substitui", "substituto", "chamado"]
-    tem_principal = any(termo in titulo_min for termo in termos_principais)
-    termos_contexto = ["seleção", "oficial", "anuncia", "divulga", "national team", "fifa", "cbf", "nationsleague", "afcon", "friendly", "qualifiers"]
-    tem_contexto = any(termo in titulo_min for termo in termos_contexto)
-    palavras_fortes = ["squad", "roster", "call-up", "callup"]
-    tem_palavra_forte = any(termo in titulo_min for termo in palavras_fortes)
-    termos_proibidos = ["entrevista", "opinião", "coletiva", "rumor", "especulação", "provável", "expectativa", "interview", "rumour", "opinion", "predicted"]
-    tem_proibido = any(termo in titulo_min for termo in termos_proibidos)
-    
-    return ((tem_principal and tem_contexto) or tem_palavra_forte) and not tem_proibido
+def normalizar(texto):
+    texto = unquote(str(texto or ""))
+    texto = texto.lower().replace("_", " ").replace("-", " ")
+    texto = re.sub("['\u2019\u2018\u00b4`]", "", texto)
+    texto = unicodedata.normalize("NFD", texto)
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
+    texto = re.sub(r"[^\w\s]", " ", texto, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def contem_termo(texto_normalizado, termo):
+    termo_n = normalizar(termo)
+    if not termo_n:
+        return False
+    return re.search(r"\b" + re.escape(termo_n) + r"\b", texto_normalizado) is not None
+
+
+def montar_busca():
+    vistos = {}
+    for nome, apelidos in SELECOES_MONITORADAS.items():
+        for apelido in apelidos:
+            chave = normalizar(apelido)
+            if not chave or chave in vistos:
+                continue
+            vistos[chave] = nome
+    pares = sorted(vistos.items(), key=lambda item: len(item[0]), reverse=True)
+    padrao = re.compile("|".join(r"\b" + re.escape(chave) + r"\b" for chave, _ in pares))
+    return padrao, dict(pares)
+
+
+PADRAO_SELECOES, MAPA_SELECOES = montar_busca()
+
+
+def motivo_bloqueio(texto_normalizado):
+    if any(contem_termo(texto_normalizado, termo) for termo in TERMOS_FEMININO):
+        return "feminino"
+    if any(contem_termo(texto_normalizado, termo) for termo in TERMOS_OUTROS_ESPORTES):
+        return "outro_esporte"
+    if BLOQUEAR_SELECOES_DE_BASE and any(contem_termo(texto_normalizado, termo) for termo in TERMOS_BASE):
+        return "base"
+    if any(contem_termo(texto_normalizado, termo) for termo in TERMOS_RUMOR):
+        return "rumor"
+    return ""
+
 
 def classificar_noticia(texto):
-    texto_min = texto.lower()
-    selecoes_encontradas = []
-    
-    # 1. Encontra TODAS as seleções mencionadas e anota a posição exata delas na frase
-    for nome_oficial, apelidos in SELECOES_MONITORADAS.items():
-        for apelido in apelidos:
-            posicao = texto_min.find(apelido)
-            if posicao != -1:
-                selecoes_encontradas.append((posicao, nome_oficial))
-                break # Já achou o país, pula para verificar o próximo do dicionário
-                
-    # Se achou algum país, pega EXATAMENTE o que foi falado primeiro (menor posição no texto)
-    selecao_encontrada = None
-    if selecoes_encontradas:
-        selecoes_encontradas.sort(key=lambda x: x[0]) # Ordena da primeira palavra até a última
-        selecao_encontrada = selecoes_encontradas[0][1] # Pega o vencedor
-        
-    # 2. Descobre se é sobre corte/substituição
-    termos_corte = ["corte", "cortado", "desconvocado", "substitui", "substituto", "replacement", "replaced", "withdraw", "change for", "out:"]
-    eh_corte = any(termo in texto_min for termo in termos_corte)
-    
-    return selecao_encontrada, eh_corte
+    texto_n = normalizar(texto)
+    achado = PADRAO_SELECOES.search(texto_n)
+    selecao = MAPA_SELECOES.get(achado.group(0)) if achado else None
+    eh_corte = any(contem_termo(texto_n, termo) for termo in TERMOS_CORTE)
+    return selecao, eh_corte
 
-# --- MOTOR DE BUSCA ---
-def executar_varredura():
-    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-    print("\n==============================================")
-    print(f"[{agora}] Iniciando varredura com Desduplicação de Entidades...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    
-    historico_enviados = ler_cache()
-    enviados_nesta_rodada = set()
-    
-    # --- PARTE 1: PORTAIS ---
+
+def avaliar_noticia(texto):
+    texto_n = normalizar(texto)
+    if not any(contem_termo(texto_n, termo) for termo in TERMOS_CONVOCACAO):
+        return None, False, "sem_termo"
+    motivo = motivo_bloqueio(texto_n)
+    if motivo:
+        return None, False, motivo
+    selecao, eh_corte = classificar_noticia(texto)
+    if not selecao:
+        return None, False, "sem_selecao"
+    return selecao, eh_corte, ""
+
+
+def identificador(selecao, eh_corte, link):
+    if eh_corte:
+        return f"CORTE_{selecao}_{link}"
+    janela = normalizar(JANELA_FIFA_ATUAL).replace(" ", "_")
+    return f"CONVOCACAO_PRINCIPAL_{selecao}_{janela}"
+
+
+def estado_vazio():
+    return {"ids": set(), "seed_completo": False}
+
+
+def estado_para_json(estado):
+    return json.dumps(
+        {"ids": sorted(estado["ids"]), "seed_completo": bool(estado["seed_completo"])},
+        ensure_ascii=False,
+    )
+
+
+def estado_de_json(texto):
+    dados = json.loads(texto)
+    if not isinstance(dados, dict) or not isinstance(dados.get("ids", []), list):
+        raise ValueError("caderno em formato desconhecido")
+    return {
+        "ids": {str(item) for item in dados.get("ids", []) if str(item).strip()},
+        "seed_completo": bool(dados.get("seed_completo", False)),
+    }
+
+
+def ler_local():
+    if os.path.exists(ARQUIVO_CACHE):
+        with open(ARQUIVO_CACHE, encoding="utf-8") as arquivo:
+            conteudo = arquivo.read().strip()
+        if conteudo:
+            return estado_de_json(conteudo)
+    if os.path.exists(ARQUIVO_CACHE_ANTIGO):
+        with open(ARQUIVO_CACHE_ANTIGO, encoding="utf-8") as arquivo:
+            ids = {linha.strip() for linha in arquivo if linha.strip()}
+        return {"ids": ids, "seed_completo": False}
+    return estado_vazio()
+
+
+def upstash_configurado():
+    return bool(UPSTASH_URL and UPSTASH_TOKEN)
+
+
+def upstash(comando):
+    resposta = requests.post(
+        UPSTASH_URL,
+        headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+        json=comando,
+        timeout=20,
+    )
+    try:
+        dados = resposta.json()
+    except Exception as exc:
+        raise RuntimeError(f"resposta inválida ({resposta.status_code})") from exc
+    if resposta.status_code != 200 or "error" in dados:
+        raise RuntimeError(str(dados.get("error", resposta.status_code)))
+    return dados.get("result")
+
+
+def ler_remoto():
+    try:
+        resultado = upstash(["GET", CHAVE_CACHE])
+    except Exception as exc:
+        log(f"Não consegui ler o caderno online: {exc}")
+        return None, False
+    if not resultado:
+        return estado_vazio(), True
+    try:
+        return estado_de_json(resultado), True
+    except Exception as exc:
+        log(f"O caderno online está ilegível: {exc}")
+        return None, False
+
+
+def salvar_estado(estado):
+    with open(ARQUIVO_CACHE, "w", encoding="utf-8") as arquivo:
+        arquivo.write(estado_para_json(estado))
+    if not upstash_configurado():
+        return False
+    try:
+        upstash(["SET", CHAVE_CACHE, estado_para_json(estado)])
+        return True
+    except Exception as exc:
+        log(f"Não consegui gravar o caderno online: {exc}")
+        return False
+
+
+def carregar_estado():
+    if not upstash_configurado():
+        log("O caderno online ainda não está ligado.")
+        log("No Render, crie UPSTASH_REDIS_REST_URL e UPSTASH_REDIS_REST_TOKEN.")
+        log("Sem esse caderno, uma queda do Render apagaria a memória. Nesta volta não vou avisar o grupo.")
+        return None
+    remoto, ok = ler_remoto()
+    if not ok:
+        log("Não vou avisar o grupo nesta volta, para não repetir uma seleção já enviada.")
+        return None
+    local = ler_local()
+    remoto["ids"].update(local["ids"])
+    remoto["seed_completo"] = remoto["seed_completo"] or local["seed_completo"]
+    return remoto
+
+
+def enviar_telegram(mensagem):
+    if not TOKEN or not CHAT_ID:
+        log("Faltam TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID. Nada foi enviado.")
+        return False
+    try:
+        resposta = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            json={
+                "chat_id": CHAT_ID,
+                "text": mensagem,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=15,
+        )
+    except Exception:
+        log("Erro de rede ao falar com o Telegram.")
+        return False
+    if resposta.status_code != 200:
+        log(f"O Telegram recusou a mensagem: {resposta.status_code} {resposta.text[:180]}")
+        return False
+    return True
+
+
+def mensagem_portal(titulo, link):
+    return (
+        "📰 <b>ATUALIZAÇÃO DE SELEÇÃO</b>\n\n"
+        f"{html.escape(titulo)}\n\n"
+        f'<a href="{html.escape(link, quote=True)}">Ler matéria</a>'
+    )
+
+
+def mensagem_twitter(texto, link):
+    return (
+        "🐦 <b>TWITTER</b>\n\n"
+        f"{html.escape(texto)}\n\n"
+        f'<a href="{html.escape(link, quote=True)}">Ver tweet</a>'
+    )
+
+
+def mensagem_wiki(selecao, url):
+    endereco = html.escape(url, quote=True) + "#Current_squad"
+    return (
+        "📚 <b>WIKIPEDIA ATUALIZADA</b>\n\n"
+        f"A página de {html.escape(selecao)} confirmou o elenco desta janela.\n"
+        f'<a href="{endereco}">Ver o elenco</a>'
+    )
+
+
+ROTULOS_BLOQUEIO = {
+    "feminino": "futebol feminino",
+    "outro_esporte": "outro esporte",
+    "base": "seleção de base",
+    "rumor": "rumor ou opinião",
+}
+
+
+def entregar(estado, vistos, modo_semente, resumo, id_unico, mensagem, rotulo):
+    if id_unico in estado["ids"] or id_unico in vistos:
+        return
+    if modo_semente:
+        estado["ids"].add(id_unico)
+        vistos.add(id_unico)
+        resumo["anotados"] += 1
+        log(f"  Anotado sem avisar ({rotulo})")
+        return
+    if enviar_telegram(mensagem):
+        estado["ids"].add(id_unico)
+        vistos.add(id_unico)
+        resumo["enviados"] += 1
+        log(f"  Enviado ({rotulo})")
+        if not salvar_estado(estado):
+            log("  A mensagem saiu, mas o caderno online não gravou.")
+
+
+def publicar_texto(estado, vistos, modo_semente, resumo, origem, texto, link):
+    texto = " ".join((texto or "").split())
+    if len(texto) < 15 or len(texto) > 400 or not link:
+        return
+    selecao, eh_corte, motivo = avaliar_noticia(texto)
+    if motivo in ("sem_termo", "sem_selecao"):
+        return
+    if motivo:
+        log(f"  Ignorado ({ROTULOS_BLOQUEIO.get(motivo, motivo)}): {texto[:100]}")
+        return
+    if origem == "twitter":
+        mensagem = mensagem_twitter(texto, link)
+    else:
+        mensagem = mensagem_portal(texto, link)
+    entregar(
+        estado, vistos, modo_semente, resumo,
+        identificador(selecao, eh_corte, link),
+        mensagem,
+        selecao,
+    )
+
+
+def link_absoluto(base, link):
+    if not link:
+        return None
+    link = link.strip()
+    if link.startswith("/"):
+        link = urljoin(base, link)
+    if not link.startswith("http://") and not link.startswith("https://"):
+        return None
+    if " " in link:
+        return None
+    return link
+
+
+def varrer_portais(estado, vistos, modo_semente, resumo):
+    log(f"Lendo {len(URLS_PORTAIS)} portais...")
     for url in URLS_PORTAIS:
         try:
-            resposta = requests.get(url, headers=headers, timeout=15)
+            resposta = requests.get(url, headers=HEADERS_WEB, timeout=20)
+            resposta.raise_for_status()
             soup = BeautifulSoup(resposta.text, "html.parser")
             for item in soup.find_all(["a", "h2", "h3"]):
-                titulo = item.get_text(strip=True)
-                link = item.get("href") if item.name == "a" else item.find_parent("a").get("href") if item.find_parent("a") else None
-                if len(titulo) < 15 or not link: continue
-                if link.startswith("/"): link = urljoin(url, link)
-                
-                if noticia_e_relevante(titulo):
-                    selecao, eh_corte = classificar_noticia(titulo)
-                    
-                    # SEGREDO AQUI: Se for a lista principal, trava pelo nome do país. Se for corte, usa o link da matéria.
-                    if selecao and not eh_corte:
-                        id_unico = f"CONVOCACAO_PRINCIPAL_{selecao}_{JANELA_FIFA_ATUAL.replace(' ', '_')}"
-                    else:
-                        id_unico = link
+                titulo = item.get_text(" ", strip=True)
+                if item.name == "a":
+                    link = item.get("href")
+                else:
+                    pai = item.find_parent("a")
+                    link = pai.get("href") if pai else None
+                publicar_texto(
+                    estado, vistos, modo_semente, resumo, "portal",
+                    titulo, link_absoluto(url, link),
+                )
+        except Exception:
+            log(f"  Falha ao ler o portal: {url}")
 
-                    if id_unico not in historico_enviados and id_unico not in enviados_nesta_rodada:
-                        print(f" 🎉 Nova matéria: {titulo}")
-                        enviar_telegram(f"📰 *ATUALIZAÇÃO DE SELEÇÃO!*\n\n📢 {titulo}\n\n🔗 [Ler Matéria]({link})")
-                        salvar_no_cache(id_unico)
-                        enviados_nesta_rodada.add(id_unico)
-        except Exception: pass
 
-    # --- PARTE 2: TWITTER ---
-    for url_rss in URLS_TWITTER_RSS:
-        if "COLE_AQUI" in url_rss: continue
+def varrer_twitter(estado, vistos, modo_semente, resumo):
+    log(f"Lendo {len(URLS_TWITTER_RSS)} feeds...")
+    for url in URLS_TWITTER_RSS:
+        if "COLE_AQUI" in url:
+            continue
         try:
-            resposta_rss = requests.get(url_rss, headers=headers, timeout=15)
-            feed = feedparser.parse(resposta_rss.text)
+            resposta = requests.get(url, headers=HEADERS_WEB, timeout=20)
+            resposta.raise_for_status()
+            feed = feedparser.parse(resposta.text)
             for post in feed.entries:
-                texto_tweet = post.title
-                link_tweet = post.link
-                if len(texto_tweet) < 10: continue
-                
-                if noticia_e_relevante(texto_tweet):
-                    selecao, eh_corte = classificar_noticia(texto_tweet)
-                    
-                    if selecao and not eh_corte:
-                        id_unico = f"CONVOCACAO_PRINCIPAL_{selecao}_{JANELA_FIFA_ATUAL.replace(' ', '_')}"
-                    else:
-                        id_unico = link_tweet
+                publicar_texto(
+                    estado, vistos, modo_semente, resumo, "twitter",
+                    post.get("title", ""), post.get("link", ""),
+                )
+        except Exception:
+            log(f"  Falha ao ler o feed: {url}")
 
-                    if id_unico not in historico_enviados and id_unico not in enviados_nesta_rodada:
-                        print(f" 🎉 Novo Tweet: {texto_tweet[:60]}")
-                        enviar_telegram(f"🐦 *TWITTER (ATUALIZAÇÃO):*\n\n💬 _{texto_tweet}_\n\n🔗 [Ver Tweet]({link_tweet})")
-                        salvar_no_cache(id_unico)
-                        enviados_nesta_rodada.add(id_unico)
-        except Exception: pass
 
-    # --- PARTE 3: WIKIPEDIA ---
+def texto_do_elenco_atual(soup):
+    alvo = soup.find(id="Current_squad")
+    if alvo is None:
+        return ""
+    secao = alvo.find_parent("section")
+    if secao is not None:
+        return secao.get_text(" ", strip=True)
+    titulo = alvo if alvo.name in ("h2", "h3", "h4") else alvo.find_parent(["h2", "h3", "h4"])
+    if titulo is None:
+        return ""
+    partes = []
+    for irmao in titulo.find_next_siblings():
+        if irmao.name in ("h2", "h3", "h4"):
+            break
+        partes.append(irmao.get_text(" ", strip=True))
+        if len(partes) >= 8:
+            break
+    return " ".join(partes)
+
+
+def elenco_confirma_janela(texto):
+    texto_n = normalizar(texto)
+    if normalizar(JANELA_FIFA_ATUAL) not in texto_n:
+        return False
+    sinais = list(SINAIS_ELENCO_WIKI)
+    sinais.extend(FRASES_GATILHO_WIKIPEDIA)
+    return any(normalizar(sinal) and normalizar(sinal) in texto_n for sinal in sinais)
+
+
+def varrer_wikipedia(estado, vistos, modo_semente, resumo):
+    log(f"Lendo {len(URLS_WIKIPEDIA)} páginas da Wikipedia...")
+    sucessos = 0
+    sem_secao = 0
     for url in URLS_WIKIPEDIA:
         try:
-            resposta_wiki = requests.get(url, headers=headers, timeout=15)
-            soup_wiki = BeautifulSoup(resposta_wiki.text, "html.parser")
-            for item in soup_wiki.find_all("p"):
-                texto_min = item.get_text().lower()
-                
-                # Procura se ALGUMA das frases da sua lista está no parágrafo
-                gatilho_encontrado = False
-                for frase in FRASES_GATILHO_WIKIPEDIA:
-                    if frase.lower() in texto_min:
-                        gatilho_encontrado = True
-                        break # Achou uma das frases! Pode parar de procurar
-                
-                if gatilho_encontrado:
-                    selecao, _ = classificar_noticia(url) # Busca o nome do país direto na URL
-                    
-                    if selecao:
-                        id_unico = f"CONVOCACAO_PRINCIPAL_{selecao}_{JANELA_FIFA_ATUAL.replace(' ', '_')}"
-                    else:
-                        # Agora usamos a JANELA_FIFA como trava para evitar repetição se alguém mudar a vírgula no site
-                        id_unico = f"{url}__{JANELA_FIFA_ATUAL.replace(' ', '_')}"
-                    
-                    if id_unico not in historico_enviados and id_unico not in enviados_nesta_rodada:
-                        print(f" 🎉 Wikipedia atualizada: {url}")
-                        enviar_telegram(f"📚 *WIKIPEDIA ATUALIZADA!*\n\n📢 A página da seleção confirmou o elenco oficial!\n🔗 [Ver o Elenco]({url}#Current_squad)")
-                        salvar_no_cache(id_unico)
-                        enviados_nesta_rodada.add(id_unico)
-                        break
-        except Exception: pass
+            resposta = requests.get(url, headers=HEADERS_WIKI, timeout=20)
+            resposta.raise_for_status()
+            sucessos += 1
+            soup = BeautifulSoup(resposta.text, "html.parser")
+            texto = texto_do_elenco_atual(soup)
+            if not texto:
+                sem_secao += 1
+            elif elenco_confirma_janela(texto):
+                # O país sai do endereço. O texto da página cita os adversários primeiro.
+                selecao, _ = classificar_noticia(url)
+                if selecao:
+                    entregar(
+                        estado, vistos, modo_semente, resumo,
+                        identificador(selecao, False, url),
+                        mensagem_wiki(selecao, url),
+                        selecao,
+                    )
+                else:
+                    log(f"  País não reconhecido na página: {url}")
+        except Exception as exc:
+            resposta = getattr(exc, "response", None)
+            codigo = f" (código {resposta.status_code})" if resposta is not None else ""
+            log(f"  Falha na Wikipedia{codigo}: {url}")
+        time.sleep(0.5)
+    log(f"Wikipedia lida: {sucessos} de {len(URLS_WIKIPEDIA)}. Sem a seção do elenco: {sem_secao}.")
+    return sucessos
 
-# --- O TRUQUE DO SITE FALSO PARA A NUVEM (Render) ---
+
+def finalizar_semente(estado, sucessos_wiki):
+    limite = max(1, int(len(URLS_WIKIPEDIA) * 0.8))
+    if sucessos_wiki >= limite:
+        estado["seed_completo"] = True
+    gravou = salvar_estado(estado)
+    if estado["seed_completo"] and gravou:
+        log(f"Caderno inicial pronto, com {len(estado['ids'])} registros.")
+        log("Daqui em diante, só o que for novidade vai para o Telegram.")
+    elif sucessos_wiki >= limite:
+        log("A leitura acabou, mas o caderno online não gravou. Continuo em silêncio na próxima volta.")
+    else:
+        log(f"A Wikipedia respondeu {sucessos_wiki} de {len(URLS_WIKIPEDIA)} páginas.")
+        log("Ainda não vou avisar o grupo. Na próxima volta tento de novo.")
+
+
+def executar_varredura():
+    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+    log("")
+    log("==============================================")
+    log(f"[{agora}] Iniciando varredura. Janela: {JANELA_FIFA_ATUAL}")
+    if not TOKEN or not CHAT_ID:
+        log("Faltam TELEGRAM_TOKEN e TELEGRAM_CHAT_ID nas variáveis do Render.")
+        return
+    estado = carregar_estado()
+    if estado is None:
+        return
+    modo_semente = not estado["seed_completo"]
+    if modo_semente:
+        log("Primeira varredura completa: vou anotar o que já existe e ficar em silêncio.")
+    else:
+        log(f"Caderno carregado com {len(estado['ids'])} registros.")
+    vistos = set()
+    resumo = {"enviados": 0, "anotados": 0}
+    varrer_portais(estado, vistos, modo_semente, resumo)
+    varrer_twitter(estado, vistos, modo_semente, resumo)
+    sucessos_wiki = varrer_wikipedia(estado, vistos, modo_semente, resumo)
+    if modo_semente:
+        finalizar_semente(estado, sucessos_wiki)
+    log(f"Varredura encerrada. Enviados: {resumo['enviados']}. Anotados em silêncio: {resumo['anotados']}.")
+
+
 app = Flask(__name__)
-@app.route('/')
-def vivo(): return "O Bot está online 24 horas por dia!"
 
-def manter_vivo(): app.run(host="0.0.0.0", port=10000)
+
+@app.route("/")
+def vivo():
+    return "O bot está no ar."
+
+
+def manter_vivo():
+    porta = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=porta, use_reloader=False)
+
 
 if __name__ == "__main__":
-    t = threading.Thread(target=manter_vivo)
-    t.start()
-    print("Bot Iniciado!")
+    preparar_console()
+    servidor = threading.Thread(target=manter_vivo, daemon=False)
+    servidor.start()
+    log("Bot iniciado.")
+    log(f"Pausa entre varreduras: {INTERVALO_SEGUNDOS} segundos.")
     while True:
-        executar_varredura()
-        time.sleep(900)
+        try:
+            executar_varredura()
+        except Exception as exc:
+            log(f"Erro inesperado na varredura: {type(exc).__name__}")
+        time.sleep(INTERVALO_SEGUNDOS)
