@@ -334,9 +334,8 @@ URLS_PORTAIS = [
 ]
 
 URLS_TWITTER_RSS = [
-    "https://rss.app/feeds/9Dx2jq9WehxKkQQ1.xml",
-    "https://rss.app/feeds/z9lY0FTLjVUazkIM.xml"
-    # Adicione seus outros links válidos do RSS.app aqui
+    "https://fxtwitter.com/windowintlpod/feed.xml",
+    "https://fxtwitter.com/convocacaos/feed.xml",
 ]
 
 URLS_WIKIPEDIA = [
