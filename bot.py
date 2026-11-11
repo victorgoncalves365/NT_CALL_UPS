@@ -6,8 +6,8 @@ import sys
 import threading
 import time
 import unicodedata
-from datetime import datetime
-from urllib.parse import unquote, urljoin
+from datetime import date, datetime, timedelta
+from urllib.parse import unquote
 
 import feedparser
 import requests
@@ -15,27 +15,50 @@ from bs4 import BeautifulSoup
 from flask import Flask
 
 # COMO LER ESTE ARQUIVO
-# 1. As regulagens do dia a dia ficam aqui em cima: janela da FIFA, pausa e palavras.
+# 1. As regulagens do dia a dia ficam aqui em cima: pausa, palavras e o calendário da FIFA.
 # 2. No meio está a sua lista de seleções e os sites.
 # 3. Embaixo está o motor. No dia a dia você não precisa mexer nele.
 # O token do Telegram fica nas variáveis do Render, não neste arquivo.
 
-# Mês em inglês, igual ao texto da Wikipedia. Exemplo da próxima janela: "March 2027".
-JANELA_FIFA_ATUAL = "November 2026"
+# Quantos dias antes de cada data FIFA a memória das seleções zera.
+# Novembro de 2026 não entra nesse reset: é a janela que já está valendo.
+DIAS_ANTES_DO_RESET = 20
 
-# 900 segundos = 15 minutos. A pausa começa depois que a varredura termina.
+# Calendário masculino, copiado de
+# https://en.wikipedia.org/wiki/FIFA_International_Match_Calendar#Upcoming_match_windows
+# Cada item: dia em que a data começa, dia em que termina, meses escritos como na Wikipedia.
+# Euro 2028, Copa América 2028 e Copa do Mundo 2030 ficaram de fora: a página ainda não diz o dia de abertura.
+JANELAS_FIFA = [
+    (date(2026, 11, 9), date(2026, 11, 17), ("November 2026",)),
+    (date(2027, 3, 22), date(2027, 3, 30), ("March 2027",)),
+    (date(2027, 6, 7), date(2027, 6, 15), ("June 2027",)),
+    (date(2027, 6, 19), date(2027, 7, 11), ("June 2027", "July 2027")),
+    (date(2027, 6, 19), date(2027, 7, 17), ("June 2027", "July 2027")),
+    (date(2027, 9, 20), date(2027, 10, 5), ("September 2027", "October 2027")),
+    (date(2027, 11, 8), date(2027, 11, 16), ("November 2027",)),
+    (date(2027, 12, 23), date(2028, 1, 21), ("December 2027", "January 2028")),
+    (date(2028, 3, 20), date(2028, 3, 28), ("March 2028",)),
+    (date(2028, 5, 29), date(2028, 6, 6), ("May 2028", "June 2028")),
+    (date(2028, 9, 18), date(2028, 10, 3), ("September 2028", "October 2028")),
+    (date(2028, 11, 13), date(2028, 11, 21), ("November 2028",)),
+    (date(2029, 3, 19), date(2029, 3, 27), ("March 2029",)),
+    (date(2029, 6, 4), date(2029, 6, 12), ("June 2029",)),
+    (date(2029, 9, 24), date(2029, 10, 9), ("September 2029", "October 2029")),
+    (date(2029, 11, 12), date(2029, 11, 20), ("November 2029",)),
+    (date(2030, 3, 18), date(2030, 3, 26), ("March 2030",)),
+    (date(2030, 6, 3), date(2030, 6, 11), ("June 2030",)),
+    (date(2030, 9, 23), date(2030, 10, 8), ("September 2030", "October 2030")),
+    (date(2030, 11, 11), date(2030, 11, 19), ("November 2030",)),
+]
+
+# Notícias e Twitter: 15 minutos. Wikipedia: 1 hora.
+# A pausa das notícias começa depois que a varredura termina.
 INTERVALO_SEGUNDOS = 900
+INTERVALO_WIKIPEDIA_SEGUNDOS = 3600
 
 # True também bloqueia sub-17, sub-20, sub-21 e sub-23.
 # Deixei False porque uma matéria da seleção principal às vezes cita a base.
 BLOQUEAR_SELECOES_DE_BASE = False
-
-# Frases extras da Wikipedia. A janela de cima já entra na busca.
-FRASES_GATILHO_WIKIPEDIA = [
-    "november 2026, respectively",
-    "november 2026 respectively",
-    ", 2026 respectively",
-]
 
 # Palavras que fazem o bot prestar atenção.
 TERMOS_CONVOCACAO = [
@@ -200,6 +223,11 @@ SELECOES_MONITORADAS = {
     "Tailândia": ["tailândia", "tailandia", "thailand"],
     "Tajiquistão": ["tajiquistão", "tajiquistao", "tajikistan"],
     "Uzbequistão": ["uzbequistão", "uzbequistao", "uzbekistan"],
+    "Coreia do Norte": ["coreia do norte", "north korea", "korea dpr", "dpr korea"],
+    "Kuwait": ["kuwait", "kuweit"],
+    "Singapura": ["singapura", "singapore"],
+    "Síria": ["síria", "siria", "syria"],
+    "Vietnã": ["vietnã", "vietna", "vietnam"],
 
     # --- CAF (África) ---
     "África do Sul": ["áfrica do sul", "africa do sul", "south africa", "bafana bafana"],
@@ -246,6 +274,9 @@ SELECOES_MONITORADAS = {
     "Tunísia": ["tunísia", "tunisia"],
     "Uganda": ["uganda"],
     "Zâmbia": ["zâmbia", "zambia"],
+    "Quênia": ["quênia", "quenia", "kenya"],
+    "Sudão": ["sudão", "sudao", "sudan"],
+    "Zimbábue": ["zimbábue", "zimbabue", "zimbabwe"],
 
     # --- CONMEBOL (América do Sul) ---
     "Argentina": ["argentina", "albiceleste"],
@@ -276,16 +307,23 @@ SELECOES_MONITORADAS = {
     "Porto Rico": ["porto rico", "puerto rico"],
     "República Dominicana": ["república dominicana", "republica dominicana", "dominican republic"],
     "Trinidad e Tobago": ["trinidad e tobago", "trinidad and tobago"],
+    "Suriname": ["suriname", "surinam"],
 
      # --- OFC (Oceania) ---
     "Australia": ["australia", "austrália"],
-    "Nova Zelândia": ["nova zelandia", "nova zelândia", "new zealand", "new zeland"], 
+    "Nova Zelândia": ["nova zelandia", "nova zelândia", "new zealand", "new zeland"],
+    "Taiti": ["taiti", "tahiti"],
 }
 
 # --- FONTES DE DADOS ---
+# Feeds só de futebol. Cada volta lê o título das notícias novas.
+# GE cobre o Brasil. BBC, Sky, ESPN e Guardian cobrem listas e cortes no resto do mundo.
 URLS_PORTAIS = [
-    "https://globo.com", "https://reuters.com", "https://skysports.com",
-    "https://espn.com", "https://transfermarkt.com", "https://www.flashscore.com/news/", 
+    "https://ge.globo.com/rss/ge/futebol/",
+    "https://feeds.bbci.co.uk/sport/football/rss.xml",
+    "https://www.skysports.com/rss/11661",
+    "https://www.espn.com/espn/rss/soccer/news",
+    "https://www.theguardian.com/football/rss",
 ]
 
 URLS_TWITTER_RSS = [
@@ -373,6 +411,11 @@ URLS_WIKIPEDIA = [
     "https://en.wikipedia.org/wiki/Thailand_national_football_team",
     "https://en.wikipedia.org/wiki/United_Arab_Emirates_national_football_team",
     "https://en.wikipedia.org/wiki/Uzbekistan_national_football_team",
+    "https://en.wikipedia.org/wiki/North_Korea_national_football_team",
+    "https://en.wikipedia.org/wiki/Kuwait_national_football_team",
+    "https://en.wikipedia.org/wiki/Singapore_national_football_team",
+    "https://en.wikipedia.org/wiki/Syria_national_football_team",
+    "https://en.wikipedia.org/wiki/Vietnam_national_football_team",
 
     # --- CAF (África) ---
     "https://en.wikipedia.org/wiki/Algeria_national_football_team",
@@ -419,10 +462,14 @@ URLS_WIKIPEDIA = [
     "https://en.wikipedia.org/wiki/Tunisia_national_football_team",
     "https://en.wikipedia.org/wiki/Uganda_national_football_team",
     "https://en.wikipedia.org/wiki/Zambia_national_football_team",
+    "https://en.wikipedia.org/wiki/Kenya_national_football_team",
+    "https://en.wikipedia.org/wiki/Sudan_national_football_team",
+    "https://en.wikipedia.org/wiki/Zimbabwe_national_football_team",
 
     # --- OFC (Oceania) ---
     "https://en.wikipedia.org/wiki/Australia_men%27s_national_soccer_team",
     "https://en.wikipedia.org/wiki/New_Zealand_men%27s_national_football_team",
+    "https://en.wikipedia.org/wiki/Tahiti_national_football_team",
 
     # --- CONMEBOL (América do Sul) ---
     "https://en.wikipedia.org/wiki/Argentina_national_football_team",
@@ -453,6 +500,7 @@ URLS_WIKIPEDIA = [
     "https://en.wikipedia.org/wiki/Puerto_Rico_national_football_team",
     "https://en.wikipedia.org/wiki/Trinidad_and_Tobago_national_football_team",
     "https://en.wikipedia.org/wiki/United_States_men%27s_national_soccer_team",
+    "https://en.wikipedia.org/wiki/Suriname_national_football_team",
 ]
 
 def log(texto):
@@ -536,20 +584,61 @@ def avaliar_noticia(texto):
     return selecao, eh_corte, ""
 
 
+def montar_periodos():
+    periodos = []
+    for inicio, fim, nomes in JANELAS_FIFA:
+        if periodos and inicio <= periodos[-1]["fim"] + timedelta(days=14):
+            periodos[-1]["fim"] = max(periodos[-1]["fim"], fim)
+            for nome in nomes:
+                if nome not in periodos[-1]["nomes"]:
+                    periodos[-1]["nomes"].append(nome)
+            continue
+        periodos.append({
+            "inicio": inicio,
+            "fim": fim,
+            "nomes": list(nomes),
+            "reset": inicio - timedelta(days=DIAS_ANTES_DO_RESET),
+        })
+    for periodo in periodos:
+        periodo["id"] = normalizar(periodo["nomes"][0]).replace(" ", "_")
+    return periodos
+
+
+def periodo_ativo(hoje=None):
+    hoje = hoje or date.today()
+    periodos = montar_periodos()
+    atual = periodos[0]
+    for periodo in periodos:
+        if periodo["reset"] <= hoje:
+            atual = periodo
+    return atual, periodos
+
+
+def janela_id():
+    return periodo_ativo()[0]["id"]
+
+
+def nome_janela():
+    return periodo_ativo()[0]["nomes"][0]
+
+
 def identificador(selecao, eh_corte, link):
     if eh_corte:
         return f"CORTE_{selecao}_{link}"
-    janela = normalizar(JANELA_FIFA_ATUAL).replace(" ", "_")
-    return f"CONVOCACAO_PRINCIPAL_{selecao}_{janela}"
+    return f"CONVOCACAO_PRINCIPAL_{selecao}_{janela_id()}"
 
 
 def estado_vazio():
-    return {"ids": set(), "seed_completo": False}
+    return {"ids": set(), "seed_completo": False, "janela_anotada": ""}
 
 
 def estado_para_json(estado):
     return json.dumps(
-        {"ids": sorted(estado["ids"]), "seed_completo": bool(estado["seed_completo"])},
+        {
+            "ids": sorted(estado["ids"]),
+            "seed_completo": bool(estado["seed_completo"]),
+            "janela_anotada": estado.get("janela_anotada", ""),
+        },
         ensure_ascii=False,
     )
 
@@ -561,6 +650,7 @@ def estado_de_json(texto):
     return {
         "ids": {str(item) for item in dados.get("ids", []) if str(item).strip()},
         "seed_completo": bool(dados.get("seed_completo", False)),
+        "janela_anotada": str(dados.get("janela_anotada", "") or ""),
     }
 
 
@@ -573,7 +663,7 @@ def ler_local():
     if os.path.exists(ARQUIVO_CACHE_ANTIGO):
         with open(ARQUIVO_CACHE_ANTIGO, encoding="utf-8") as arquivo:
             ids = {linha.strip() for linha in arquivo if linha.strip()}
-        return {"ids": ids, "seed_completo": False}
+        return {"ids": ids, "seed_completo": False, "janela_anotada": ""}
     return estado_vazio()
 
 
@@ -637,7 +727,9 @@ def carregar_estado():
         return None
     local = ler_local()
     remoto["ids"].update(local["ids"])
-    remoto["seed_completo"] = remoto["seed_completo"] or local["seed_completo"]
+    if janela_id() in (remoto.get("janela_anotada"), local.get("janela_anotada")):
+        remoto["janela_anotada"] = janela_id()
+        remoto["seed_completo"] = True
     return remoto
 
 
@@ -738,39 +830,23 @@ def publicar_texto(estado, vistos, modo_semente, resumo, origem, texto, link):
     )
 
 
-def link_absoluto(base, link):
-    if not link:
-        return None
-    link = link.strip()
-    if link.startswith("/"):
-        link = urljoin(base, link)
-    if not link.startswith("http://") and not link.startswith("https://"):
-        return None
-    if " " in link:
-        return None
-    return link
-
-
 def varrer_portais(estado, vistos, modo_semente, resumo):
-    log(f"Lendo {len(URLS_PORTAIS)} portais...")
+    log(f"Lendo {len(URLS_PORTAIS)} feeds de futebol...")
     for url in URLS_PORTAIS:
         try:
             resposta = requests.get(url, headers=HEADERS_WEB, timeout=20)
             resposta.raise_for_status()
-            soup = BeautifulSoup(resposta.text, "html.parser")
-            for item in soup.find_all(["a", "h2", "h3"]):
-                titulo = item.get_text(" ", strip=True)
-                if item.name == "a":
-                    link = item.get("href")
-                else:
-                    pai = item.find_parent("a")
-                    link = pai.get("href") if pai else None
+            feed = feedparser.parse(resposta.text)
+            if not feed.entries:
+                log(f"  Feed sem notícias: {url}")
+                continue
+            for post in feed.entries:
                 publicar_texto(
                     estado, vistos, modo_semente, resumo, "portal",
-                    titulo, link_absoluto(url, link),
+                    post.get("title", ""), post.get("link", ""),
                 )
         except Exception:
-            log(f"  Falha ao ler o portal: {url}")
+            log(f"  Falha ao ler o feed: {url}")
 
 
 def varrer_twitter(estado, vistos, modo_semente, resumo):
@@ -813,11 +889,10 @@ def texto_do_elenco_atual(soup):
 
 def elenco_confirma_janela(texto):
     texto_n = normalizar(texto)
-    if normalizar(JANELA_FIFA_ATUAL) not in texto_n:
+    nomes = [normalizar(nome) for nome in periodo_ativo()[0]["nomes"]]
+    if not any(nome in texto_n for nome in nomes):
         return False
-    sinais = list(SINAIS_ELENCO_WIKI)
-    sinais.extend(FRASES_GATILHO_WIKIPEDIA)
-    return any(normalizar(sinal) and normalizar(sinal) in texto_n for sinal in sinais)
+    return any(normalizar(sinal) and normalizar(sinal) in texto_n for sinal in SINAIS_ELENCO_WIKI)
 
 
 def varrer_wikipedia(estado, vistos, modo_semente, resumo):
@@ -858,6 +933,7 @@ def finalizar_semente(estado, sucessos_wiki):
     limite = max(1, int(len(URLS_WIKIPEDIA) * 0.8))
     if sucessos_wiki >= limite:
         estado["seed_completo"] = True
+        estado["janela_anotada"] = janela_id()
     gravou = salvar_estado(estado)
     if estado["seed_completo"] and gravou:
         log(f"Caderno inicial pronto, com {len(estado['ids'])} registros.")
@@ -869,30 +945,54 @@ def finalizar_semente(estado, sucessos_wiki):
         log("Ainda não vou avisar o grupo. Na próxima volta tento de novo.")
 
 
-def executar_varredura():
+def executar_varredura(forcar_wikipedia):
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     log("")
     log("==============================================")
-    log(f"[{agora}] Iniciando varredura. Janela: {JANELA_FIFA_ATUAL}")
+    log(f"[{agora}] Iniciando varredura. Janela: {nome_janela()}")
+    _, periodos = periodo_ativo()
+    futuros = [periodo for periodo in periodos if periodo["reset"] > date.today()]
+    if futuros:
+        proximo = futuros[0]
+        log(
+            f"Próximo reset: {proximo['reset'].strftime('%d/%m/%Y')}, "
+            f"20 dias antes de {proximo['inicio'].strftime('%d/%m/%Y')} ({proximo['nomes'][0]})."
+        )
     if not TOKEN or not CHAT_ID:
         log("Faltam TELEGRAM_TOKEN e TELEGRAM_CHAT_ID nas variáveis do Render.")
-        return
+        return False
     estado = carregar_estado()
     if estado is None:
-        return
-    modo_semente = not estado["seed_completo"]
+        return False
+    # Silêncio só na primeira ligação, no meio da janela de novembro de 2026.
+    # Nas janelas seguintes o reset avisa a convocação nova.
+    modo_semente = janela_id() == "november_2026" and estado.get("janela_anotada") != "november_2026"
     if modo_semente:
-        log("Primeira varredura completa: vou anotar o que já existe e ficar em silêncio.")
+        log("Primeira leitura de novembro de 2026: vou anotar o que já foi convocado e ficar em silêncio.")
+    elif estado.get("janela_anotada") not in ("", janela_id()):
+        log(f"Reset feito. A janela agora é {nome_janela()}. Convocação nova vai para o grupo.")
+        estado["janela_anotada"] = janela_id()
+        estado["seed_completo"] = True
+        salvar_estado(estado)
     else:
         log(f"Caderno carregado com {len(estado['ids'])} registros.")
     vistos = set()
     resumo = {"enviados": 0, "anotados": 0}
     varrer_portais(estado, vistos, modo_semente, resumo)
     varrer_twitter(estado, vistos, modo_semente, resumo)
-    sucessos_wiki = varrer_wikipedia(estado, vistos, modo_semente, resumo)
-    if modo_semente:
-        finalizar_semente(estado, sucessos_wiki)
+    leu_wiki = modo_semente or forcar_wikipedia
+    if leu_wiki:
+        sucessos_wiki = varrer_wikipedia(estado, vistos, modo_semente, resumo)
+        if modo_semente:
+            finalizar_semente(estado, sucessos_wiki)
+    else:
+        log("Wikipedia em pausa. A próxima leitura completa é dentro de 1 hora.")
     log(f"Varredura encerrada. Enviados: {resumo['enviados']}. Anotados em silêncio: {resumo['anotados']}.")
+    if not leu_wiki:
+        return False
+    if modo_semente and estado.get("janela_anotada") != janela_id():
+        return False
+    return True
 
 
 app = Flask(__name__)
@@ -913,10 +1013,12 @@ if __name__ == "__main__":
     servidor = threading.Thread(target=manter_vivo, daemon=False)
     servidor.start()
     log("Bot iniciado.")
-    log(f"Pausa entre varreduras: {INTERVALO_SEGUNDOS} segundos.")
+    log(f"Notícias a cada {INTERVALO_SEGUNDOS} segundos. Wikipedia a cada {INTERVALO_WIKIPEDIA_SEGUNDOS} segundos.")
+    proxima_wikipedia = 0
     while True:
         try:
-            executar_varredura()
+            if executar_varredura(time.time() >= proxima_wikipedia):
+                proxima_wikipedia = time.time() + INTERVALO_WIKIPEDIA_SEGUNDOS
         except Exception as exc:
             log(f"Erro inesperado na varredura: {type(exc).__name__}")
         time.sleep(INTERVALO_SEGUNDOS)
