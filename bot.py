@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import unicodedata
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import unquote
 
 import feedparser
@@ -317,13 +317,20 @@ SELECOES_MONITORADAS = {
 
 # --- FONTES DE DADOS ---
 # Feeds só de futebol. Cada volta lê o título das notícias novas.
-# GE cobre o Brasil. BBC, Sky, ESPN e Guardian cobrem listas e cortes no resto do mundo.
+# Vários países e vários jornais, para lista, corte e substituição.
 URLS_PORTAIS = [
     "https://ge.globo.com/rss/ge/futebol/",
     "https://feeds.bbci.co.uk/sport/football/rss.xml",
     "https://www.skysports.com/rss/11661",
     "https://www.espn.com/espn/rss/soccer/news",
     "https://www.theguardian.com/football/rss",
+    "https://sports.yahoo.com/soccer/rss/",
+    "https://www.cbssports.com/rss/headlines/soccer",
+    "https://www.marca.com/rss/futbol.xml",
+    "https://www.gazzetta.it/rss/calcio.xml",
+    "https://www.mirror.co.uk/sport/football/rss.xml",
+    "https://www.france24.com/en/sport/rss",
+    "https://www.leparisien.fr/sports/football/rss.xml",
 ]
 
 URLS_TWITTER_RSS = [
@@ -629,7 +636,7 @@ def identificador(selecao, eh_corte, link):
 
 
 def estado_vazio():
-    return {"ids": set(), "seed_completo": False, "janela_anotada": ""}
+    return {"ids": set(), "seed_completo": False, "janela_anotada": "", "update_offset": 0, "liberado_em": {}, "wiki_ignorada": {}}
 
 
 def estado_para_json(estado):
@@ -638,6 +645,9 @@ def estado_para_json(estado):
             "ids": sorted(estado["ids"]),
             "seed_completo": bool(estado["seed_completo"]),
             "janela_anotada": estado.get("janela_anotada", ""),
+            "update_offset": int(estado.get("update_offset") or 0),
+            "liberado_em": estado.get("liberado_em") or {},
+            "wiki_ignorada": estado.get("wiki_ignorada") or {},
         },
         ensure_ascii=False,
     )
@@ -651,6 +661,9 @@ def estado_de_json(texto):
         "ids": {str(item) for item in dados.get("ids", []) if str(item).strip()},
         "seed_completo": bool(dados.get("seed_completo", False)),
         "janela_anotada": str(dados.get("janela_anotada", "") or ""),
+        "update_offset": int(dados.get("update_offset") or 0),
+        "liberado_em": dados.get("liberado_em") if isinstance(dados.get("liberado_em"), dict) else {},
+        "wiki_ignorada": dados.get("wiki_ignorada") if isinstance(dados.get("wiki_ignorada"), dict) else {},
     }
 
 
@@ -663,7 +676,7 @@ def ler_local():
     if os.path.exists(ARQUIVO_CACHE_ANTIGO):
         with open(ARQUIVO_CACHE_ANTIGO, encoding="utf-8") as arquivo:
             ids = {linha.strip() for linha in arquivo if linha.strip()}
-        return {"ids": ids, "seed_completo": False, "janela_anotada": ""}
+        return {"ids": ids, "seed_completo": False, "janela_anotada": "", "update_offset": 0, "liberado_em": {}, "wiki_ignorada": {}}
     return estado_vazio()
 
 
@@ -727,6 +740,15 @@ def carregar_estado():
         return None
     local = ler_local()
     remoto["ids"].update(local["ids"])
+    remoto["update_offset"] = max(int(remoto.get("update_offset") or 0), int(local.get("update_offset") or 0))
+    liberado = dict(remoto.get("liberado_em") or {})
+    for nome, momento in (local.get("liberado_em") or {}).items():
+        if str(momento) > str(liberado.get(nome, "")):
+            liberado[nome] = momento
+    remoto["liberado_em"] = liberado
+    wiki = dict(remoto.get("wiki_ignorada") or {})
+    wiki.update(local.get("wiki_ignorada") or {})
+    remoto["wiki_ignorada"] = wiki
     if janela_id() in (remoto.get("janela_anotada"), local.get("janela_anotada")):
         remoto["janela_anotada"] = janela_id()
         remoto["seed_completo"] = True
@@ -759,9 +781,9 @@ def enviar_telegram(mensagem):
 
 def mensagem_portal(titulo, link):
     return (
-        "📰 <b>ATUALIZAÇÃO DE SELEÇÃO</b>\n\n"
+        "📰 <b>SQUAD UPDATE</b>\n\n"
         f"{html.escape(titulo)}\n\n"
-        f'<a href="{html.escape(link, quote=True)}">Ler matéria</a>'
+        f'<a href="{html.escape(link, quote=True)}">Read story</a>'
     )
 
 
@@ -769,16 +791,16 @@ def mensagem_twitter(texto, link):
     return (
         "🐦 <b>TWITTER</b>\n\n"
         f"{html.escape(texto)}\n\n"
-        f'<a href="{html.escape(link, quote=True)}">Ver tweet</a>'
+        f'<a href="{html.escape(link, quote=True)}">See post</a>'
     )
 
 
 def mensagem_wiki(selecao, url):
     endereco = html.escape(url, quote=True) + "#Current_squad"
     return (
-        "📚 <b>WIKIPEDIA ATUALIZADA</b>\n\n"
-        f"A página de {html.escape(selecao)} confirmou o elenco desta janela.\n"
-        f'<a href="{endereco}">Ver o elenco</a>'
+        "📚 <b>WIKIPEDIA UPDATED</b>\n\n"
+        f"{html.escape(selecao)}'s page confirmed the squad for this window.\n"
+        f'<a href="{endereco}">See the squad</a>'
     )
 
 
@@ -790,9 +812,13 @@ ROTULOS_BLOQUEIO = {
 }
 
 
-def entregar(estado, vistos, modo_semente, resumo, id_unico, mensagem, rotulo):
+def entregar(estado, vistos, modo_semente, resumo, id_unico, mensagem, rotulo, publicado=None):
     if id_unico in estado["ids"] or id_unico in vistos:
         return
+    if id_unico.startswith("CONVOCACAO_PRINCIPAL_"):
+        marca = (estado.get("liberado_em") or {}).get(rotulo)
+        if marca and (publicado is None or publicado.strftime("%Y-%m-%dT%H:%M:%S") <= marca):
+            return
     if modo_semente:
         estado["ids"].add(id_unico)
         vistos.add(id_unico)
@@ -803,12 +829,24 @@ def entregar(estado, vistos, modo_semente, resumo, id_unico, mensagem, rotulo):
         estado["ids"].add(id_unico)
         vistos.add(id_unico)
         resumo["enviados"] += 1
+        (estado.get("liberado_em") or {}).pop(rotulo, None)
+        (estado.get("wiki_ignorada") or {}).pop(rotulo, None)
         log(f"  Enviado ({rotulo})")
         if not salvar_estado(estado):
             log("  A mensagem saiu, mas o caderno online não gravou.")
 
 
-def publicar_texto(estado, vistos, modo_semente, resumo, origem, texto, link):
+def data_do_post(post):
+    bruto = post.get("published_parsed") or post.get("updated_parsed")
+    if not bruto:
+        return None
+    try:
+        return datetime(*bruto[:6])
+    except Exception:
+        return None
+
+
+def publicar_texto(estado, vistos, modo_semente, resumo, origem, texto, link, publicado=None):
     texto = " ".join((texto or "").split())
     if len(texto) < 15 or len(texto) > 400 or not link:
         return
@@ -827,6 +865,7 @@ def publicar_texto(estado, vistos, modo_semente, resumo, origem, texto, link):
         identificador(selecao, eh_corte, link),
         mensagem,
         selecao,
+        publicado,
     )
 
 
@@ -843,7 +882,7 @@ def varrer_portais(estado, vistos, modo_semente, resumo):
             for post in feed.entries:
                 publicar_texto(
                     estado, vistos, modo_semente, resumo, "portal",
-                    post.get("title", ""), post.get("link", ""),
+                    post.get("title", ""), post.get("link", ""), data_do_post(post),
                 )
         except Exception:
             log(f"  Falha ao ler o feed: {url}")
@@ -861,7 +900,7 @@ def varrer_twitter(estado, vistos, modo_semente, resumo):
             for post in feed.entries:
                 publicar_texto(
                     estado, vistos, modo_semente, resumo, "twitter",
-                    post.get("title", ""), post.get("link", ""),
+                    post.get("title", ""), post.get("link", ""), data_do_post(post),
                 )
         except Exception:
             log(f"  Falha ao ler o feed: {url}")
@@ -912,6 +951,16 @@ def varrer_wikipedia(estado, vistos, modo_semente, resumo):
                 # O país sai do endereço. O texto da página cita os adversários primeiro.
                 selecao, _ = classificar_noticia(url)
                 if selecao:
+                    if selecao in (estado.get("liberado_em") or {}):
+                        assinatura = normalizar(texto)[:400]
+                        vistas = estado.setdefault("wiki_ignorada", {})
+                        if vistas.get(selecao) == assinatura:
+                            continue
+                        if selecao not in vistas:
+                            vistas[selecao] = assinatura
+                            continue
+                        vistas.pop(selecao, None)
+                        estado.get("liberado_em", {}).pop(selecao, None)
                     entregar(
                         estado, vistos, modo_semente, resumo,
                         identificador(selecao, False, url),
@@ -945,6 +994,122 @@ def finalizar_semente(estado, sucessos_wiki):
         log("Ainda não vou avisar o grupo. Na próxima volta tento de novo.")
 
 
+def selecoes_travadas(estado):
+    prefixo = "CONVOCACAO_PRINCIPAL_"
+    sufixo = f"_{janela_id()}"
+    paises = []
+    for item in estado["ids"]:
+        if item.startswith(prefixo) and item.endswith(sufixo):
+            paises.append(item[len(prefixo):-len(sufixo)])
+    return sorted(pais for pais in paises if pais)
+
+
+def esquecer_selecao(estado, nome):
+    alvo = f"CONVOCACAO_PRINCIPAL_{nome}_{janela_id()}"
+    if alvo not in estado["ids"]:
+        return False
+    estado["ids"].remove(alvo)
+    estado.setdefault("liberado_em", {})[nome] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    estado.setdefault("wiki_ignorada", {}).pop(nome, None)
+    return True
+
+
+def interpretar_comando(texto):
+    texto = (texto or "").strip()
+    if not texto.startswith("/"):
+        return "", ""
+    partes = texto.split(maxsplit=1)
+    comando = partes[0].split("@", 1)[0].lower()
+    resto = partes[1].strip() if len(partes) > 1 else ""
+    return comando, resto
+
+
+def achar_selecao_pedida(pedido):
+    pedido_n = normalizar(pedido)
+    for nome in SELECOES_MONITORADAS:
+        if normalizar(nome) == pedido_n:
+            return nome
+    selecao, _ = classificar_noticia(pedido)
+    return selecao
+
+
+def texto_travados(estado):
+    paises = selecoes_travadas(estado)
+    if not paises:
+        return f"No teams are locked for this window ({nome_janela()})."
+    linhas = "\n".join(f"• {html.escape(pais)}" for pais in paises)
+    return f"<b>Locked for {html.escape(nome_janela())}</b> ({len(paises)})\n\n{linhas}"
+
+
+def responder_comando(estado, texto):
+    comando, resto = interpretar_comando(texto)
+    if comando in ("/locked", "/list", "/travados", "/lista"):
+        enviar_telegram(texto_travados(estado))
+        return
+    if comando in ("/forget", "/esquecer"):
+        if not resto:
+            enviar_telegram("Type the team after the command. Example: /forget Brazil")
+            return
+        nome = achar_selecao_pedida(resto)
+        if not nome:
+            enviar_telegram("Team not found. Use the name, for example: /forget South Korea")
+            return
+        if esquecer_selecao(estado, nome):
+            enviar_telegram(
+                f"{html.escape(nome)} is unlocked. "
+                "The next call-up in this window will be posted."
+            )
+            log(f"Comando: {nome} destravado.")
+        else:
+            enviar_telegram(f"{html.escape(nome)} was not locked for this window.")
+        return
+    if comando in ("/help", "/commands", "/start", "/ajuda", "/comandos"):
+        enviar_telegram(
+            "<b>Commands</b>\n\n"
+            "/locked — teams already posted for this window\n"
+            "/forget Brazil — unlocks Brazil\n\n"
+            "The bot checks these commands about once a minute."
+        )
+
+
+def processar_comandos(estado):
+    if not TOKEN or not CHAT_ID:
+        return False
+    try:
+        resposta = requests.get(
+            f"https://api.telegram.org/bot{TOKEN}/getUpdates",
+            params={"timeout": 0, "offset": int(estado.get("update_offset") or 0)},
+            timeout=20,
+        )
+    except Exception:
+        log("Erro de rede ao ler os comandos do Telegram.")
+        return False
+    if resposta.status_code != 200:
+        log(f"O Telegram recusou a leitura dos comandos: {resposta.status_code}")
+        return False
+    mudou = False
+    for update in resposta.json().get("result", []):
+        estado["update_offset"] = int(update.get("update_id", 0)) + 1
+        mudou = True
+        mensagem = update.get("message") or {}
+        chat = mensagem.get("chat") or {}
+        if str(chat.get("id", "")) != str(CHAT_ID):
+            continue
+        responder_comando(estado, mensagem.get("text") or "")
+    return mudou
+
+
+def consultar_comandos():
+    if not TOKEN or not CHAT_ID or not upstash_configurado():
+        return
+    estado = carregar_estado()
+    if estado is None:
+        return
+    if processar_comandos(estado):
+        if not salvar_estado(estado):
+            log("O comando foi lido, mas o caderno online não gravou.")
+
+
 def executar_varredura(forcar_wikipedia):
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     log("")
@@ -976,6 +1141,9 @@ def executar_varredura(forcar_wikipedia):
         salvar_estado(estado)
     else:
         log(f"Caderno carregado com {len(estado['ids'])} registros.")
+    if processar_comandos(estado):
+        if not salvar_estado(estado):
+            log("O comando foi lido, mas o caderno online não gravou.")
     vistos = set()
     resumo = {"enviados": 0, "anotados": 0}
     varrer_portais(estado, vistos, modo_semente, resumo)
@@ -1014,11 +1182,18 @@ if __name__ == "__main__":
     servidor.start()
     log("Bot iniciado.")
     log(f"Notícias a cada {INTERVALO_SEGUNDOS} segundos. Wikipedia a cada {INTERVALO_WIKIPEDIA_SEGUNDOS} segundos.")
+    log("No grupo: /locked lista os países. /forget Brazil solta um país.")
     proxima_wikipedia = 0
+    proxima_noticias = 0
     while True:
         try:
-            if executar_varredura(time.time() >= proxima_wikipedia):
-                proxima_wikipedia = time.time() + INTERVALO_WIKIPEDIA_SEGUNDOS
+            agora = time.time()
+            if agora >= proxima_noticias:
+                if executar_varredura(agora >= proxima_wikipedia):
+                    proxima_wikipedia = time.time() + INTERVALO_WIKIPEDIA_SEGUNDOS
+                proxima_noticias = time.time() + INTERVALO_SEGUNDOS
+            else:
+                consultar_comandos()
         except Exception as exc:
             log(f"Erro inesperado na varredura: {type(exc).__name__}")
-        time.sleep(INTERVALO_SEGUNDOS)
+        time.sleep(60)
