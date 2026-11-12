@@ -56,9 +56,9 @@ JANELAS_FIFA = [
 INTERVALO_SEGUNDOS = 900
 INTERVALO_WIKIPEDIA_SEGUNDOS = 3600
 
-# True também bloqueia sub-17, sub-20, sub-21 e sub-23.
-# Deixei False porque uma matéria da seleção principal às vezes cita a base.
-BLOQUEAR_SELECOES_DE_BASE = False
+# True bloqueia sub-17, sub-20, sub-21 e sub-23.
+# Ligado enquanto a Copa do Mundo sub-17 estiver no noticiário.
+BLOQUEAR_SELECOES_DE_BASE = True
 
 # Palavras que fazem o bot prestar atenção.
 TERMOS_CONVOCACAO = [
@@ -108,9 +108,12 @@ TERMOS_RUMOR = [
 
 TERMOS_BASE = [
     "sub-17", "sub-20", "sub-21", "sub-23",
+    "sub17", "sub20", "sub21", "sub23",
     "under-17", "under-20", "under-21", "under-23",
+    "under17", "under20", "under21", "under23",
     "u-17", "u-20", "u-21", "u-23",
     "u17", "u20", "u21", "u23",
+    "youth squad", "youth team", "seleção de base",
 ]
 
 # Estas palavras não travam a seleção inteira: cada matéria de corte pode ser avisada.
@@ -334,8 +337,8 @@ URLS_PORTAIS = [
 ]
 
 URLS_TWITTER_RSS = [
-    "https://fxtwitter.com/windowintlpod/feed.xml",
-    "https://fxtwitter.com/convocacaos/feed.xml",
+    "https://fxtwitter.com/windowintlpod/feed.atom.xml",
+    "https://fxtwitter.com/convocacaos/feed.atom.xml",
 ]
 
 URLS_WIKIPEDIA = [
@@ -887,21 +890,42 @@ def varrer_portais(estado, vistos, modo_semente, resumo):
             log(f"  Falha ao ler o feed: {url}")
 
 
+def alternativas_twitter(url):
+    if url.endswith("/feed.atom.xml"):
+        return [url, url.replace("/feed.atom.xml", "/feed.xml")]
+    if url.endswith("/feed.xml"):
+        return [url, url.replace("/feed.xml", "/feed.atom.xml")]
+    return [url]
+
+
+def ler_feed_twitter(url):
+    resposta = requests.get(url, headers=HEADERS_WEB, timeout=20)
+    resposta.raise_for_status()
+    feed = feedparser.parse(resposta.text)
+    if not feed.entries:
+        raise RuntimeError("feed vazio")
+    return feed
+
+
 def varrer_twitter(estado, vistos, modo_semente, resumo):
     log(f"Lendo {len(URLS_TWITTER_RSS)} feeds...")
     for url in URLS_TWITTER_RSS:
         if "COLE_AQUI" in url:
             continue
-        try:
-            resposta = requests.get(url, headers=HEADERS_WEB, timeout=20)
-            resposta.raise_for_status()
-            feed = feedparser.parse(resposta.text)
+        leu = False
+        for tentativa in alternativas_twitter(url):
+            try:
+                feed = ler_feed_twitter(tentativa)
+            except Exception:
+                continue
             for post in feed.entries:
                 publicar_texto(
                     estado, vistos, modo_semente, resumo, "twitter",
                     post.get("title", ""), post.get("link", ""), data_do_post(post),
                 )
-        except Exception:
+            leu = True
+            break
+        if not leu:
             log(f"  Falha ao ler o feed: {url}")
 
 
